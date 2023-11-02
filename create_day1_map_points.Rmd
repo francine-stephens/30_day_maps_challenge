@@ -1,0 +1,275 @@
+---
+title: "Day 1 - Map HEB vs Walmart"
+author: "Francine Stephens"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE, 
+                      warning = FALSE, 
+                      message = FALSE,
+                      echo = FALSE)
+
+library(tidyverse)
+library(tidycensus)
+library(tigris)
+library(sf)
+library(readr)
+library(tmap)
+options(tigris_use_cache = TRUE)
+
+# Parameters
+wgs <- 4326
+nad83 <- 4269 
+tx_lambert <- 3082
+
+# Data Import
+wd <- getwd()
+heb <- read_csv(here::here("data", "heb_locations_poi_factory.csv"))
+walmart <- read_csv(here::here("data", "walmart_locations_us_canada_poi_factory.csv"))
+heb_logo <- "/images/H-E-B_logo.svg.png"
+walmart_logo <- "/images/Walmart_logo.svg.png"
+
+tx_sf <- states(year = 2022) %>% 
+  filter(NAME == "Texas")  %>% 
+  st_transform(., crs = tx_lambert)
+
+tx_places_sf <- places(state = "48", year = 2022) %>% 
+  st_centroid()  %>% 
+  st_transform(., crs = tx_lambert)
+
+metros_sf <- core_based_statistical_areas(year = 2020)
+
+metdivs_sf <- metro_divisions(year = 2020)
+
+```
+
+
+```{r clean polys}
+show_city_names <- c("Dallas", "Fort Worth", "Austin", "Houston",
+                     "San Antonio", "El Paso", "Lubbock", "Laredo", 
+                     "McAllen", "Corpus Christi")
+
+select_places_cents_sf <- tx_places_sf %>% 
+  filter(NAME %in% show_city_names)
+
+
+show_metros <- c("San Antonio-New Braunfels, TX",
+                 "Austin-Round Rock-Georgetown, TX",
+                 "Dallas-Plano-Irving, TX", 
+                 "Fort Worth-Arlington-Grapevine, TX",
+                 "Houston-The Woodlands-Sugar Land, TX",
+                 "McAllen-Edinburg-Mission, TX",
+                 "El Paso, TX")
+
+
+dfw_sf <- metdivs_sf %>% 
+  filter(NAME %in% show_metros)  %>% 
+  st_transform(., crs = tx_lambert) %>% 
+  select(NAME)
+
+tx_metros_sf <- metros_sf %>% 
+  filter(NAME %in% show_metros)  %>% 
+  st_transform(., crs = tx_lambert) %>% 
+  select(NAME) %>% 
+  rbind(., dfw_sf)
+  
+```
+
+```{r clean points}
+# Clean points
+heb_sf <- heb %>% 
+  st_as_sf(coords = c("longitude", "latitude"), crs = wgs ) %>% 
+  st_transform(., crs = tx_lambert) %>% 
+  mutate(store = "HEB")
+
+walmart_sf <- walmart %>% 
+  st_as_sf(coords = c("longitude", "latitude"), crs = wgs )%>% 
+  st_transform(., crs = tx_lambert) %>% 
+  st_filter(., tx_sf, .predicate = st_within) %>%   
+  mutate(name = tolower(name)) %>%
+  filter(!str_detect(name, "fuel"),
+         !str_detect(name, "diesel"),
+         !str_detect(name, "sam's club")) %>% 
+  mutate(store = "Walmart")
+  
+
+all_store_points_sf <- rbind(heb_sf %>% 
+                               select(name, store), walmart_sf %>% select(name, store))
+
+store_icons <- tmap_icons( c(paste0(wd, heb_logo), paste0(wd, walmart_logo)))
+
+all_stores_in_major_metros <- all_store_points_sf %>% 
+  st_filter(., tx_metros_sf, .predicate = st_within) %>% 
+  st_join(., tx_metros_sf, left = TRUE)
+
+```
+
+
+
+
+# Maps
+```{r tmap}
+
+tm_shape(tx_sf) + 
+  tm_fill(col = "grey") + 
+  tm_shape(all_store_points_sf) + 
+  tm_symbols(shape = "store",
+             shapes = store_icons, 
+             border.col = NULL, 
+             size = 0.2)
+  
+
+tx_stores <- tm_shape(tx_sf) + 
+  tm_fill(col = "grey"
+          ) + 
+  tm_borders() +
+  tm_shape(all_store_points_sf) + 
+  tm_dots(col = "store", 
+          palette = c("#ee2824",
+                      "#0071ce"),
+         alpha = 0.4, size = 0.15,
+         title = ""
+          ) + 
+  tm_shape(select_places_cents_sf) +
+  tm_text(text = "NAME", size = 0.8,  auto.placement = T,
+          remove.overlap = T) +
+  tm_layout(main.title = "Major Grocery Stores of Texas: HEB vs. Walmart",
+            main.title.position = "left",
+            frame = F, main.title.size = 0.95, main.title.fontface = "bold",
+            inner.margins=c(.04,.03, .02, .01),
+            outer.margins = c(0, 0, 0, 0)
+) + 
+  tm_credits(text = "Data Source: POI Factory",
+              position=c("RIGHT", "BOTTOM"))
+tx_stores 
+tmap_save(tx_stores, paste0(wd, "/outputs/", "texas_state_stores.png"))
+```
+
+```{r faceted map by metro}
+
+sa_metro <- tm_shape(tx_metros_sf %>% 
+           filter(NAME == "San Antonio-New Braunfels, TX")) + 
+  tm_fill(col = "grey") + 
+  tm_borders() + 
+  tm_shape(all_stores_in_major_metros %>% 
+             filter(NAME == "San Antonio-New Braunfels, TX")) + 
+  tm_dots(col = "store", 
+          palette = c("#ee2824",
+                      "#0071ce"),
+         alpha = 0.4, size = 0.15,
+         title = "") + 
+   tm_layout(main.title = "San Antonio Metro",
+            main.title.position = "left",
+            frame = F, main.title.size = 0.95, main.title.fontface = "bold",
+            inner.margins=c(.04,.03, .02, .01),
+            outer.margins = c(0, 0, 0, 0)
+)
+
+tmap_save(sa_metro, paste0(wd, "/outputs/", "sa_metro_stores.png"))
+
+hou_metro <- tm_shape(tx_metros_sf %>% 
+           filter(NAME == "Houston-The Woodlands-Sugar Land, TX")) + 
+  tm_fill(col = "grey") + 
+  tm_borders() + 
+  tm_shape(all_stores_in_major_metros %>% 
+             filter(NAME == "Houston-The Woodlands-Sugar Land, TX")) + 
+  tm_dots(col = "store", 
+          palette = c("#ee2824",
+                      "#0071ce"),
+         alpha = 0.4, size = 0.15,
+         title = "") + 
+   tm_layout(main.title = "Houston Metro",
+            main.title.position = "left",
+            frame = F, main.title.size = 0.95, main.title.fontface = "bold",
+            inner.margins=c(.04,.03, .02, .01),
+            outer.margins = c(0, 0, 0, 0)
+)
+hou_metro
+tmap_save(hou_metro, paste0(wd, "/outputs/", "hou_metro_stores.png"))
+
+
+hou_metro <- tm_shape(tx_metros_sf %>% 
+           filter(NAME == "Houston-The Woodlands-Sugar Land, TX")) + 
+  tm_fill(col = "grey") + 
+  tm_borders() + 
+  tm_shape(all_stores_in_major_metros %>% 
+             filter(NAME == "Houston-The Woodlands-Sugar Land, TX")) + 
+  tm_dots(col = "store", 
+          palette = c("#ee2824",
+                      "#0071ce"),
+         alpha = 0.4, size = 0.15,
+         title = "") + 
+   tm_layout(main.title = "Houston Metro",
+            main.title.position = "left",
+            frame = F, main.title.size = 0.95, main.title.fontface = "bold",
+            inner.margins=c(.04,.03, .02, .01),
+            outer.margins = c(0, 0, 0, 0)
+)
+hou_metro
+```
+
+
+
+```{r ggplot}
+ggplot()+
+  geom_sf(data=tx_sf,
+               color='grey', size=0.2) + 
+  geom_sf(data = walmart_sf,
+          color = "#0071ce", alpha = 0.5) +
+  geom_sf(data = heb_sf,
+          color = "#ee2824", alpha = 0.4)
+  theme_void()+
+  theme(
+     text=element_text(),
+    plot.title=element_text(),
+    legend.position="bottom",
+    legend.key = element_rect(colour = "black"),
+    legend.key.width = unit(1, 'cm'),
+    plot.margin = unit(c(0, 0.5, 0, 0.5), "cm")
+  )
+
+#+
+  scale_fill_manual(values=pal2, breaks=values,
+                    labels = value_labels,
+                    na.translate = F)+
+  guides(fill = 
+           guide_legend(title.position = "top",
+                        label.position="bottom",
+                        title.hjust =0.5,
+                        nrow = 1))+
+  coord_map(xlim=c(-180,180))+
+  theme_void()+
+  theme(
+     text=element_text(family=chart_font),
+      plot.title=element_text(family=bold_font),
+    legend.position="bottom",
+    legend.key = element_rect(colour = "black"),
+    legend.key.width = unit(1, 'cm'),
+    plot.margin = unit(c(0, 0.5, 0, 0.5), "cm")
+  )+
+  labs(
+    title="Population Growth Rate: 2020",
+    subtitle="Annual Population Growth Rate Percentage",
+    caption="Data from OurWorldInData.org | Chart @tanya_shapiro",
+    fill="Percentage Range"
+  )
+```
+
+
+----- 
+ For Later: 
+ 
+ 
+# Analysis
+```{r}
+
+```
+
+
+## Exports
+```{r}
+
+```
+
